@@ -1,2 +1,6 @@
 PyQt5==5.15.11
 psutil
+PyQtWebEngine==5.15.6
+plotly==5.18.0
+pandas==2.2.0
+numpy==1.26.3

@@ -199,6 +199,11 @@ class DuplicateFinderApp(QMainWindow):
         disk_analyzer_action.triggered.connect(self.launch_disk_analyzer)
         tools_menu.addAction(disk_analyzer_action)
         
+        # Add disk visualizer action
+        visualizer_action = QAction('Disk Usage Visualizer', self)
+        visualizer_action.triggered.connect(self.launch_disk_visualizer)
+        tools_menu.addAction(visualizer_action)
+        
         # Create central widget and main layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -335,6 +340,11 @@ class DuplicateFinderApp(QMainWindow):
         disk_analyzer_button.clicked.connect(self.launch_disk_analyzer)
         action_layout.addWidget(disk_analyzer_button)
         
+        # Add disk visualizer button
+        visualizer_button = QPushButton("Disk Visualizer")
+        visualizer_button.clicked.connect(self.launch_disk_visualizer)
+        action_layout.addWidget(visualizer_button)
+        
         results_layout.addLayout(action_layout)
         main_layout.addWidget(results_group)
         
@@ -349,6 +359,18 @@ class DuplicateFinderApp(QMainWindow):
             
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Could not launch Disk Space Analyzer: {str(e)}")
+    
+    def launch_disk_visualizer(self):
+        """Launch the Disk Usage Visualizer"""
+        try:
+            # Get the path to the disk_visualizer.py file
+            visualizer_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "disk_visualizer.py")
+            
+            # Launch the visualizer as a separate process
+            subprocess.Popen(["python3", visualizer_path])
+            
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Could not launch Disk Visualizer: {str(e)}")
         
     def verify_path(self):
         """Verify that the entered path exists and is accessible"""
