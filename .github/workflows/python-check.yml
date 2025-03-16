@@ -1,4 +1,4 @@
-name: Python Application Check
+name: Python Application Run Check
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 jobs:
-  check-code:
+  test-run:
     runs-on: ubuntu-latest
     
     steps:
@@ -28,8 +28,18 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y xvfb libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-xfixes0 x11-utils
     
-    - name: Verify code imports successfully
+    - name: Run application
       run: |
-        # Simple check that the file can be imported without errors
-        python -c "import duplicate_finder"
-        echo "Code imports successfully!"
+        # Run the application using xvfb-run with a timeout
+        # The timeout ensures the workflow doesn't hang indefinitely
+        timeout 5s xvfb-run -a python duplicate_finder.py || code=$?
+        
+        # timeout returns 124 when it terminates a process due to timeout, which is expected
+        # Any other error code indicates a problem with the application
+        if [ "$code" -eq 124 ]; then
+          echo "Application started successfully and was terminated by timeout as expected"
+          exit 0
+        else
+          echo "Application failed to run properly (exit code: $code)"
+          exit 1
+        fi
