@@ -69,12 +69,18 @@ python duplicate_finder.py
 
 You can create a standalone executable using PyInstaller:
 
-```bash
+```bash[screen-recorder-sun-nov-19-2023-21-01-24.webm](https://github.com/user-attachments/assets/5c955998-3166-4fdb-8c60-bc3802b4d36f)
+
 pip install pyinstaller
 pyinstaller --onefile --windowed duplicate_finder.py
 ```
 
 The executable will be created in the `dist` directory.
+
+Demo
+[Screencast from 2025-03-16 20-01-20.webm](https://github.com/user-attachments/assets/cff1b0b7-e6a0-4aeb-a6f6-9f603f0dea67)
+
+
 
 ## Contributing
 
