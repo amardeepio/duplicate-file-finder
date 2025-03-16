@@ -2,6 +2,7 @@ import sys
 import os
 import hashlib
 import shutil
+import subprocess
 from pathlib import Path
 from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
@@ -189,6 +190,15 @@ class DuplicateFinderApp(QMainWindow):
         self.setWindowTitle('Duplicate File Finder')
         self.setGeometry(100, 100, 900, 600)
         
+        # Create menu bar
+        menubar = self.menuBar()
+        tools_menu = menubar.addMenu('Tools')
+        
+        # Add disk analyzer action
+        disk_analyzer_action = QAction('Disk Space Analyzer', self)
+        disk_analyzer_action.triggered.connect(self.launch_disk_analyzer)
+        tools_menu.addAction(disk_analyzer_action)
+        
         # Create central widget and main layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -320,8 +330,25 @@ class DuplicateFinderApp(QMainWindow):
         self.export_button.setEnabled(False)
         action_layout.addWidget(self.export_button)
         
+        # Add disk analyzer button
+        disk_analyzer_button = QPushButton("Disk Space Analyzer")
+        disk_analyzer_button.clicked.connect(self.launch_disk_analyzer)
+        action_layout.addWidget(disk_analyzer_button)
+        
         results_layout.addLayout(action_layout)
         main_layout.addWidget(results_group)
+        
+    def launch_disk_analyzer(self):
+        """Launch the Disk Space Analyzer application"""
+        try:
+            # Get the path to the disk_space_analyzer.py file
+            analyzer_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "disk_space_analyzer.py")
+            
+            # Launch the analyzer as a separate process
+            subprocess.Popen(["python3", analyzer_path])
+            
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Could not launch Disk Space Analyzer: {str(e)}")
         
     def verify_path(self):
         """Verify that the entered path exists and is accessible"""
