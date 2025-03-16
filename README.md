@@ -18,7 +18,7 @@ A desktop application to scan your drive and find duplicate files. It helps you 
 
 ### Prerequisites
 
-- Python 3.6 or higher
+- Python 3.11 or higher
 - PyQt5
 
 ### Setup
