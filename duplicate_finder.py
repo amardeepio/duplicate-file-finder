@@ -9,7 +9,8 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QProgressBar, QTreeWidget, QTreeWidgetItem, 
                             QCheckBox, QComboBox, QGroupBox, QLineEdit, 
                             QTableWidget, QTableWidgetItem, QHeaderView,
-                            QSplitter, QMessageBox, QAction, QMenu, QSpinBox)
+                            QSplitter, QMessageBox, QAction, QMenu, QSpinBox,
+                            QDialog)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
 from PyQt5.QtGui import QIcon, QFont
 
@@ -231,6 +232,11 @@ class DuplicateFinderApp(QMainWindow):
         check_path_button = QPushButton("Verify Path")
         check_path_button.clicked.connect(self.verify_path)
         path_validation_layout.addWidget(check_path_button)
+        
+        # Dictionary to store references to buttons for easy access in tests
+        self.button_dict = {
+            'verify_path': check_path_button
+        }
         
         path_layout.addLayout(path_validation_layout)
         scan_options_layout.addLayout(path_layout)
@@ -516,10 +522,137 @@ class DuplicateFinderApp(QMainWindow):
         
     def delete_selected(self):
         """Delete selected duplicate files"""
-        # This is a placeholder - in a real app, you would show a selection dialog
-        # to let the user choose which files to keep and which to delete
-        QMessageBox.information(self, "Not Implemented", 
-                              "In a complete application, this would allow you to select which duplicate files to delete.")
+        # Get the current selected row in the results table
+        selected_rows = self.results_table.selectedIndexes()
+        if not selected_rows:
+            QMessageBox.warning(self, "No Selection", "Please select a duplicate group from the results table.")
+            return
+            
+        # Get the group ID from the first selected cell's row
+        group_id = selected_rows[0].row()
+        
+        # Get the duplicate group
+        try:
+            signature = list(self.duplicates.keys())[group_id]
+            files = self.duplicates[signature]
+        except (IndexError, KeyError):
+            QMessageBox.warning(self, "Invalid Selection", "Could not find the selected duplicate group.")
+            return
+            
+        # Create a dialog to let user select which files to delete
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Select Files to Delete")
+        dialog.setMinimumWidth(600)
+        dialog.setMinimumHeight(400)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # Add instructions
+        layout.addWidget(QLabel("Select the files you want to delete. Keep at least one file."))
+        
+        # Add file list with checkboxes
+        file_list = QTreeWidget()
+        file_list.setHeaderLabels(["Select", "File Path", "Size", "Last Modified"])
+        file_list.setColumnWidth(0, 60)
+        file_list.setColumnWidth(1, 300)
+        
+        # Track checkboxes for later access
+        checkboxes = []
+        
+        # Add each file as an item with a checkbox
+        for i, file_info in enumerate(files):
+            item = QTreeWidgetItem(file_list)
+            
+            # Create a checkbox in the first column
+            checkbox = QCheckBox()
+            # Check all except the first file by default
+            if i > 0:
+                checkbox.setChecked(True)
+            checkboxes.append(checkbox)
+            file_list.setItemWidget(item, 0, checkbox)
+            
+            # File path, size, and date
+            item.setText(1, file_info['path'])
+            item.setText(2, self.format_size(file_info['size']))
+            date = datetime.fromtimestamp(file_info['modified']).strftime('%Y-%m-%d %H:%M:%S')
+            item.setText(3, date)
+            
+        layout.addWidget(file_list)
+        
+        # Add action buttons
+        button_layout = QHBoxLayout()
+        
+        cancel_button = QPushButton("Cancel")
+        cancel_button.clicked.connect(dialog.reject)
+        button_layout.addWidget(cancel_button)
+        
+        delete_button = QPushButton("Delete Selected")
+        delete_button.clicked.connect(dialog.accept)
+        button_layout.addWidget(delete_button)
+        
+        layout.addLayout(button_layout)
+        
+        # Show the dialog and process the result
+        if dialog.exec_() == QDialog.Accepted:
+            files_to_delete = []
+            all_checked = True
+            
+            # Check which files were selected for deletion
+            for i, checkbox in enumerate(checkboxes):
+                if checkbox.isChecked():
+                    files_to_delete.append(files[i]['path'])
+                else:
+                    all_checked = False
+            
+            # Don't allow deleting all files
+            if all_checked:
+                QMessageBox.warning(self, "Invalid Selection", "You must keep at least one file.")
+                return
+                
+            # Confirm deletion
+            count = len(files_to_delete)
+            if count == 0:
+                QMessageBox.information(self, "No Files Selected", "No files were selected for deletion.")
+                return
+                
+            msg = f"Are you sure you want to delete {count} file(s)?\n\nThis action cannot be undone!"
+            confirm = QMessageBox.warning(self, "Confirm Deletion", msg, 
+                                       QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                                       
+            if confirm == QMessageBox.Yes:
+                # Perform deletion
+                deleted_count = 0
+                failed_count = 0
+                failed_files = []
+                
+                for file_path in files_to_delete:
+                    try:
+                        os.remove(file_path)
+                        deleted_count += 1
+                    except Exception as e:
+                        failed_count += 1
+                        failed_files.append(f"{file_path}: {str(e)}")
+                
+                # Show results
+                if failed_count == 0:
+                    QMessageBox.information(self, "Deletion Complete", 
+                                         f"Successfully deleted {deleted_count} file(s).")
+                    
+                    # Update the results by removing the deleted files
+                    updated_files = [f for f in files if f['path'] not in files_to_delete]
+                    
+                    # If only one file remains, remove this group from duplicates
+                    if len(updated_files) <= 1:
+                        del self.duplicates[signature]
+                    else:
+                        self.duplicates[signature] = updated_files
+                        
+                    # Refresh the results table
+                    self.display_results(self.duplicates)
+                else:
+                    error_msg = f"Deleted {deleted_count} file(s), but {failed_count} file(s) could not be deleted:\n\n"
+                    error_msg += "\n".join(failed_files)
+                    QMessageBox.warning(self, "Deletion Incomplete", error_msg)
         
     def export_results(self):
         """Export scan results to CSV"""
