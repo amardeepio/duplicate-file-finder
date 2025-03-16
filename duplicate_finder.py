@@ -1,6 +1,7 @@
 import sys
 import os
 import hashlib
+import subprocess
 import shutil
 from pathlib import Path
 from datetime import datetime
