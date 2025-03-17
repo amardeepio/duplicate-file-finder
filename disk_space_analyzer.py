@@ -256,6 +256,12 @@ class DiskSpaceAnalyzer(QWidget):
         large_files_layout.addWidget(self.results_table)
         
         main_layout.addWidget(large_files_group)
+
+        # Add Delete Selected button
+        self.delete_button = QPushButton("Delete Selected")
+        self.delete_button.clicked.connect(self.delete_selected_files)
+        self.delete_button.setEnabled(False)  # Disabled by default
+        control_layout.addWidget(self.delete_button)
     
     def populate_drives(self):
         """Populate the drive selection combobox"""
@@ -453,6 +459,56 @@ class DiskSpaceAnalyzer(QWidget):
         
         # Color code rows based on size
         self.color_code_rows()
+
+        # Enable delete button if files are found
+        self.delete_button.setEnabled(len(file_list) > 0)
+    
+    def delete_selected_files(self):
+        """Delete the selected files from the resuls table"""
+        selected_rows = set(index.row() for index in self.results_table.selectedIndexes())
+        if not selected_rows:
+            QMessageBox.warning(self, "No Files Selected", "Please select at least one file to delete.")
+            return
+        
+        # confirm deletion
+        confirm = QMessageBox.question(
+
+            self,
+            "Delete Files",
+            "Are you sure you want to delete the selected files?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if confirm != QMessageBox.Yes:
+            return
+        
+        # Sort rows in reverse order to avoid index shifting issues
+        sorted_rows = sorted(selected_rows, reverse=True)
+        deleted_files = []
+        failed_deletions= []
+        for row in sorted_rows:
+                file_path = self.results_table.item(row, 1).toolTip()
+                try:
+                    os.remove(file_path)
+                    deleted_files.append(file_path)
+                    self.results_table.removeRow(row)
+                except Exception as e:
+                    failed_deletions.append(f"{file_path}: {str(e)}")
+        # show results
+
+        if deleted_files:
+            QMessageBox.information(self, "Files Deleted", f"Deleted {len(deleted_files)} files.")
+        if failed_deletions:
+            QMessageBox.warning(self, "Failed Deletions", f"Failed to delete {len(failed_deletions)} files:\n{', '.join(failed_deletions)}")
+
+        # Update status 
+        self.status_label.setText(f"Deleted {len(deleted_files)} files.")
+
+        # disable delete button if no rows left
+        if self.results_table.rowCount() == 0:
+            self.delete_button.setEnabled(False)
+
     
     def color_code_rows(self):
         """Color code the rows based on file size"""
