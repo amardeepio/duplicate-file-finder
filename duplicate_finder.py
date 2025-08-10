@@ -17,154 +17,165 @@ from PyQt5.QtGui import QIcon, QFont
 
 class FileScanner(QThread):
     """Worker thread for scanning files to avoid UI freezing"""
-    progress_update = pyqtSignal(int, int, str)
+    progress_update = pyqtSignal(int, str)
     scan_complete = pyqtSignal(dict)
-    
+
     def __init__(self, root_path, file_extensions=None, min_size=1024, scan_method="content"):
         super().__init__()
         self.root_path = root_path
         self.file_extensions = file_extensions
-        self.min_size = min_size  # Minimum file size in bytes
-        self.scan_method = scan_method  # "content", "name", or "size"
+        self.min_size = min_size
+        self.scan_method = scan_method
         self.running = True
-        
+
     def run(self):
-        duplicates = {}
-        file_count = 0
-        processed_count = 0
-        
-        # Instead of collecting all files at once, process them in smaller batches
+        """Dispatcher for different scan methods."""
         try:
-            # Estimate total file count first (lightweight operation)
-            self.progress_update.emit(0, 0, "Counting files...")
-            total_files = self._count_files_quickly()
-            self.progress_update.emit(0, total_files, f"Found approximately {total_files} files to scan")
-            
-            # Now process files in a streaming fashion
-            for file_path in self._iter_files():
-                if not self.running:
-                    break
-                    
-                processed_count += 1
-                
-                try:
-                    # Skip if file doesn't exist or is not accessible
-                    if not os.path.exists(file_path) or not os.access(file_path, os.R_OK):
-                        continue
-                        
-                    # Skip if doesn't match extension filter
-                    if self.file_extensions:
-                        if not any(file_path.lower().endswith(ext.lower()) for ext in self.file_extensions):
-                            continue
-                    
-                    # Get file size and skip if below minimum size
-                    file_size = os.path.getsize(file_path)
-                    if file_size < self.min_size:
-                        continue
-                    
-                    # Update progress
-                    self.progress_update.emit(processed_count, total_files, file_path)
-                    
-                    # Generate file signature based on scan method
-                    file_signature = None
-                    
-                    if self.scan_method == "size":
-                        file_signature = str(file_size)
-                    elif self.scan_method == "name":
-                        file_signature = os.path.basename(file_path)
-                    else:  # content-based hash
-                        file_signature = self._get_file_hash(file_path)
-                    
-                    # Store file info
-                    if file_signature:
-                        file_info = {
-                            'path': file_path,
-                            'size': file_size,
-                            'modified': os.path.getmtime(file_path)
-                        }
-                        
-                        if file_signature in duplicates:
-                            duplicates[file_signature].append(file_info)
-                        else:
-                            duplicates[file_signature] = [file_info]
-                
-                except Exception as e:
-                    print(f"Error processing {file_path}: {str(e)}")
+            if self.scan_method == "content":
+                self._scan_by_content()
+            else:
+                self._scan_by_name_or_size()
         except Exception as e:
             print(f"Error during scan: {str(e)}")
-            
-        # Filter out unique files
+            self.scan_complete.emit({})
+
+    def _scan_by_content(self):
+        """Scan for duplicates by file content (size -> hash)."""
+        sizes = {}
+        processed_count = 0
+        total_files = self._count_files_quickly()
+        self.progress_update.emit(0, "Pass 1/2: Grouping by size...")
+
+        for file_path, file_size in self._iter_files():
+            if not self.running:
+                return
+            processed_count += 1
+            if processed_count % 20 == 0 or processed_count == total_files:
+                percentage = int((processed_count / total_files) * 70)
+                self.progress_update.emit(percentage, f"Pass 1/2: Analyzing sizes... {self._truncate_path(file_path)}")
+
+            if file_size in sizes:
+                sizes[file_size].append(file_path)
+            else:
+                sizes[file_size] = [file_path]
+
+        duplicates = {}
+        potential_duplicates = {size: paths for size, paths in sizes.items() if len(paths) > 1}
+        
+        total_to_hash = sum(len(paths) for paths in potential_duplicates.values())
+        if total_to_hash == 0:
+            self.progress_update.emit(100, "Scan complete. No duplicates found.")
+            self.scan_complete.emit({})
+            return
+
+        hashed_count = 0
+        self.progress_update.emit(70, "Pass 2/2: Hashing potential duplicates...")
+
+        for size, paths in potential_duplicates.items():
+            if not self.running:
+                break
+            for file_path in paths:
+                if not self.running:
+                    break
+                
+                hashed_count += 1
+                percentage = 70 + int((hashed_count / total_to_hash) * 30)
+                self.progress_update.emit(percentage, f"Pass 2/2: Hashing... {self._truncate_path(file_path)}")
+
+                file_hash = self._get_file_hash(file_path)
+                if file_hash:
+                    try:
+                        file_info = {'path': file_path, 'size': size, 'modified': os.path.getmtime(file_path)}
+                        if file_hash in duplicates:
+                            duplicates[file_hash].append(file_info)
+                        else:
+                            duplicates[file_hash] = [file_info]
+                    except OSError:
+                        continue
+        
         result = {key: files for key, files in duplicates.items() if len(files) > 1}
         self.scan_complete.emit(result)
-        
+
+    def _scan_by_name_or_size(self):
+        """Scan for duplicates by file name or size."""
+        duplicates = {}
+        processed_count = 0
+        total_files = self._count_files_quickly()
+        self.progress_update.emit(0, "Scanning...")
+
+        for file_path, file_size in self._iter_files():
+            if not self.running:
+                break
+            
+            processed_count += 1
+            if processed_count % 20 == 0 or processed_count == total_files:
+                percentage = int((processed_count / total_files) * 100)
+                self.progress_update.emit(percentage, f"Scanning... {self._truncate_path(file_path)}")
+
+            try:
+                if self.scan_method == "size":
+                    signature = str(file_size)
+                elif self.scan_method == "name":
+                    signature = os.path.basename(file_path)
+                else:
+                    signature = None
+                
+                if signature:
+                    file_info = {'path': file_path, 'size': file_size, 'modified': os.path.getmtime(file_path)}
+                    if signature in duplicates:
+                        duplicates[signature].append(file_info)
+                    else:
+                        duplicates[signature] = [file_info]
+            except (OSError, FileNotFoundError):
+                continue
+
+        result = {key: files for key, files in duplicates.items() if len(files) > 1}
+        self.scan_complete.emit(result)
+
+    def _truncate_path(self, path, length=60):
+        if len(path) > length:
+            return "..." + path[-(length - 3):]
+        return path
+
     def _count_files_quickly(self):
-        """Quickly estimate the number of files to process"""
-        count = 0
-        max_sample = 5  # Only sample a few directories to estimate
-        sampled = 0
-        
+        """Quickly estimate the number of files to process."""
+        total_files = 0
         try:
-            # First count immediate files in root
-            with os.scandir(self.root_path) as it:
-                for entry in it:
-                    if entry.is_file():
-                        count += 1
-                    
-            # Then sample some subdirectories
-            for root, dirs, files in os.walk(self.root_path):
-                count += len(files)
-                sampled += 1
-                if sampled >= max_sample:
-                    # Extrapolate based on remaining directories
-                    remaining_dirs = sum(1 for _ in os.walk(self.root_path)) - sampled
-                    avg_files_per_dir = count / (sampled + 1)  # +1 for root
-                    count += int(remaining_dirs * avg_files_per_dir)
+            for root, _, files in os.walk(self.root_path):
+                if not self.running:
                     break
-                    
+                total_files += len(files)
+                if total_files > 20000:
+                    break
         except Exception as e:
             print(f"Error estimating file count: {str(e)}")
-            # Return a default value
             return 1000
-            
-        return max(count, 1)  # Ensure at least 1
-        
+        return max(total_files, 1)
+
     def _iter_files(self):
-        """Generator that yields files one at a time, with filtering"""
+        """Generator that yields (file_path, file_size) tuples, with filtering."""
         try:
             for root, _, files in os.walk(self.root_path):
                 for filename in files:
                     if not self.running:
                         return
-                        
                     file_path = os.path.join(root, filename)
-                    
-                    # Apply extension filter
-                    if self.file_extensions:
-                        if not any(file_path.lower().endswith(ext.lower()) for ext in self.file_extensions):
-                            continue
-                            
+                    if self.file_extensions and not any(file_path.lower().endswith(ext.lower()) for ext in self.file_extensions):
+                        continue
                     try:
-                        # Check minimum size
-                        if os.path.getsize(file_path) < self.min_size:
-                            continue
-                            
-                        yield file_path
-                        
+                        file_size = os.path.getsize(file_path)
+                        if file_size >= self.min_size:
+                            yield file_path, file_size
                     except (PermissionError, FileNotFoundError, OSError):
                         continue
-                        
         except Exception as e:
             print(f"Error scanning directory: {str(e)}")
-            # Just stop iteration
-            return
-        
+
     def _get_file_hash(self, file_path, chunk_size=8192):
-        """Calculate MD5 hash of a file"""
+        """Calculate MD5 hash of a file."""
         md5 = hashlib.md5()
-        
         try:
             with open(file_path, 'rb') as f:
-                # Read file in chunks to handle large files efficiently
                 for chunk in iter(lambda: f.read(chunk_size), b''):
                     if not self.running:
                         return None
@@ -173,7 +184,7 @@ class FileScanner(QThread):
         except Exception as e:
             print(f"Error hashing {file_path}: {str(e)}")
             return None
-            
+
     def stop(self):
         self.running = False
 
@@ -469,19 +480,10 @@ class DuplicateFinderApp(QMainWindow):
             self.scan_button.setEnabled(True)
             self.stop_button.setEnabled(False)
     
-    def update_progress(self, current, total, current_file):
+    def update_progress(self, percentage, message):
         """Update the progress bar and status label"""
-        if total > 0:
-            percentage = int((current / total) * 100)
-            self.progress_bar.setValue(percentage)
-            
-        # Truncate path if too long
-        if len(current_file) > 60:
-            display_path = "..." + current_file[-57:]
-        else:
-            display_path = current_file
-            
-        self.status_label.setText(f"Scanning: {current}/{total} - {display_path}")
+        self.progress_bar.setValue(percentage)
+        self.status_label.setText(message)
         
     def display_results(self, duplicates):
         """Display the scan results in the table"""
