@@ -1,25 +1,85 @@
 # Duplicate File Finder
 
-A desktop application to scan your drive and find duplicate files. It helps you identify and manage duplicate files to free up disk space.
+A desktop application to find duplicate files and analyze disk space.
 
 ## Features
 
-- Scan any directory for duplicate files
-- Filter by file extensions (e.g., .jpg, .pdf, .mp3)
-- Set minimum file size to ignore small files
-- Choose between different comparison methods:
-  - Content Hash (MD5): Most accurate, compares actual file content
-  - File Size: Fast but less accurate
-  - Filename: Quick check for identically named files
-- View detailed information about duplicate groups
-- Export results to CSV for further analysis
+- **Duplicate File Finder**:
+  - Scan any directory for duplicate files.
+  - Filter by file extensions and minimum file size.
+  - Choose between content hash, file size, or filename comparison.
+  - View duplicate groups and delete unwanted files.
+  - Export results to CSV.
+- **Disk Space Analyzer**:
+  - Analyze disk space usage for any drive.
+  - Find the largest files to identify what's taking up space.
+  - Find the largest folders to see which directories are the biggest.
+  - Delete files directly from the results list.
+- **Disk Usage Visualizer**:
+  - Interactive charts to visualize disk usage.
+  - Pie chart and treemap for directory sizes.
+  - Bar chart for file types breakdown.
+
+## Screenshots
+
+<table align="center">
+  <tr>
+    <td><img src="screenshots/duplicate-finder.png" alt="Duplicate Finder" width="400"/></td>
+    <td><img src="screenshots/disk-analyzer.png" alt="Disk Analyzer" width="400"/></td>
+  </tr>
+  <tr>
+    <td align="center"><em>Duplicate Finder</em></td>
+    <td align="center"><em>Disk Analyzer</em></td>
+  </tr>
+  <tr>
+    <td><img src="screenshots/disk-usage-chart.png" alt="Disk Usage Chart" width="400"/></td>
+    <td><img src="screenshots/disk-usage-analyze.png" alt="Disk Usage Analyzer" width="400"/></td>
+  </tr>
+  <tr>
+    <td align="center"><em>Disk Usage Chart</em></td>
+    <td align="center"><em>Disk Usage Analyzer</em></td>
+  </tr>
+</table>
+
+## How It Works
+
+The application is built with Python and the PyQt5 framework for the graphical user interface. Here's a breakdown of how the core features work:
+
+### Duplicate File Finder
+
+The duplicate finding process is optimized for performance:
+
+1.  **Scanning**: The application walks through the selected directory to gather all files that match the filter criteria (extensions, size).
+2.  **Grouping**:
+    -   **Content Hash**: To avoid hashing every single file, the scanner first groups files by their size. Only files with identical sizes are considered potential duplicates.
+    -   **Hashing**: For each group of same-sized files, an MD5 hash is calculated for each file. To speed up this process, hashing is done in parallel using multiple CPU cores (`multiprocessing`). Files with the same hash are confirmed as duplicates.
+    -   **Other Methods**: The "File Size" and "Filename" methods are faster as they only rely on file metadata and don't read the file content.
+3.  **Results**: The groups of duplicate files are then displayed in the results table.
+
+### Disk Space Analyzer
+
+The analyzer scans the filesystem to find the largest files and folders:
+
+-   **Scanning**: It uses a separate thread (`QThread`) to perform the scan in the background, ensuring the UI remains responsive.
+-   **File Discovery**: For large files, it iterates through the directory tree and keeps track of the top files based on their size.
+-   **Folder Discovery**: For large folders, it recursively calculates the total size of each directory by summing up the sizes of all files and subdirectories within it.
+
+### Disk Usage Visualizer
+
+The visualizer uses the `plotly` library to create interactive charts:
+
+-   **Data Collection**: Similar to the analyzer, it scans the selected directory to get information about directory sizes and file types.
+-   **Chart Generation**: The collected data is then used to generate:
+    -   A **pie chart** and a **treemap** to visualize the relative sizes of directories.
+    -   A **bar chart** to show the space occupied by different file extensions.
+-   **Interactivity**: The charts are displayed using a web engine view within the application, allowing for hovering to see details, zooming, and more.
 
 ## Installation
 
 ### Prerequisites
 
 - Python 3.11 or higher
-- PyQt5
+- See `requirements.txt` for all package dependencies.
 
 ### Setup
 
@@ -49,38 +109,19 @@ pip install -r requirements.txt
 
 Run the application:
 ```bash
-python duplicate_finder.py
+python app.py
 ```
-
-### Scanning for Duplicates
-
-1. Enter the directory path you want to scan or use the quick access buttons (Home, Documents, Downloads)
-2. Optionally set file extensions to filter (e.g., `.jpg,.png,.pdf`)
-3. Set the minimum file size to skip small files
-4. Choose your preferred scan method (Content Hash recommended for accuracy)
-5. Click "Start Scan"
-
-### Managing Results
-
-- View details of each duplicate group by clicking the "View" button
-- Export results to CSV for record-keeping or further analysis
 
 ## Building a Standalone Executable (Optional)
 
 You can create a standalone executable using PyInstaller:
 
-```bash[screen-recorder-sun-nov-19-2023-21-01-24.webm](https://github.com/user-attachments/assets/5c955998-3166-4fdb-8c60-bc3802b4d36f)
-
+```bash
 pip install pyinstaller
-pyinstaller --onefile --windowed duplicate_finder.py
+pyinstaller --onefile --windowed app.py
 ```
 
 The executable will be created in the `dist` directory.
-
-Demo
-[Screencast from 2025-03-16 20-01-20.webm](https://github.com/user-attachments/assets/cff1b0b7-e6a0-4aeb-a6f6-9f603f0dea67)
-
-
 
 ## Contributing
 
@@ -88,4 +129,4 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License.
