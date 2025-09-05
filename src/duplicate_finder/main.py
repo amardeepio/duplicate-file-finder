@@ -1,9 +1,37 @@
 import sys
+import multiprocessing
 import os
+import hashlib
+import shutil
+import subprocess
+from pathlib import Path
+from datetime import datetime
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+                            QHBoxLayout, QPushButton, QLabel, QFileDialog, 
+                            QProgressBar, QTreeWidget, QTreeWidgetItem, 
+                            QCheckBox, QComboBox, QGroupBox, QLineEdit, 
+                            QTableWidget, QTableWidgetItem, QHeaderView,
+                            QSplitter, QMessageBox, QAction, QMenu, QSpinBox,
+                            QDialog, QTabWidget, QAbstractItemView)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
+from PyQt5.QtGui import QIcon, QFont
 
+# Import the other tools
+from .analyzer import DiskSpaceAnalyzer
+from .visualizer import DiskVisualizer
 
-# Add src to path to allow for relative imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+# Top-level worker function for multiprocessing
+def _hash_file_worker(file_path, chunk_size=8192):
+    """Worker function to hash a single file."""
+    md5 = hashlib.md5()
+    try:
+        with open(file_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(chunk_size), b''):
+                md5.update(chunk)
+        return file_path, md5.hexdigest()
+    except Exception:
+        return file_path, None
+
 
 class FileScanner(QThread):
     """Worker thread for scanning files to avoid UI freezing"""
@@ -30,7 +58,8 @@ class FileScanner(QThread):
             self.scan_complete.emit({})
 
     def _scan_by_content(self):
-        """Scan for duplicates by file content (size -> hash)."""
+        """Scan for duplicates by file content (size -> hash), parallelized."""
+        # Pass 1: Group by size
         sizes = {}
         processed_count = 0
         total_files = self._count_files_quickly()
@@ -41,7 +70,7 @@ class FileScanner(QThread):
                 return
             processed_count += 1
             if processed_count % 20 == 0 or processed_count == total_files:
-                percentage = int((processed_count / total_files) * 70)
+                percentage = int((processed_count / total_files) * 50)  # Pass 1 is 50%
                 self.progress_update.emit(percentage, f"Pass 1/2: Analyzing sizes... {self._truncate_path(file_path)}")
 
             if file_size in sizes:
@@ -49,40 +78,55 @@ class FileScanner(QThread):
             else:
                 sizes[file_size] = [file_path]
 
+        # Prepare for Pass 2: Hashing
         duplicates = {}
-        potential_duplicates = {size: paths for size, paths in sizes.items() if len(paths) > 1}
+        potential_duplicates_paths = []
+        for size, paths in sizes.items():
+            if len(paths) > 1:
+                potential_duplicates_paths.extend(paths)
         
-        total_to_hash = sum(len(paths) for paths in potential_duplicates.values())
+        total_to_hash = len(potential_duplicates_paths)
         if total_to_hash == 0:
             self.progress_update.emit(100, "Scan complete. No duplicates found.")
             self.scan_complete.emit({})
             return
 
+        # Pass 2: Hashing potential duplicates in parallel
+        self.progress_update.emit(50, "Pass 2/2: Hashing potential duplicates...")
+        
+        num_processes = os.cpu_count() or 1
+        pool = multiprocessing.Pool(processes=num_processes)
+        
         hashed_count = 0
-        self.progress_update.emit(70, "Pass 2/2: Hashing potential duplicates...")
-
-        for size, paths in potential_duplicates.items():
-            if not self.running:
-                break
-            for file_path in paths:
+        try:
+            results_iterator = pool.imap_unordered(_hash_file_worker, potential_duplicates_paths)
+            
+            for file_path, file_hash in results_iterator:
                 if not self.running:
+                    pool.terminate()
                     break
                 
                 hashed_count += 1
-                percentage = 70 + int((hashed_count / total_to_hash) * 30)
+                percentage = 50 + int((hashed_count / total_to_hash) * 50) # Pass 2 is 50%
                 self.progress_update.emit(percentage, f"Pass 2/2: Hashing... {self._truncate_path(file_path)}")
 
-                file_hash = self._get_file_hash(file_path)
                 if file_hash:
                     try:
-                        file_info = {'path': file_path, 'size': size, 'modified': os.path.getmtime(file_path)}
+                        file_size = os.path.getsize(file_path)
+                        file_info = {'path': file_path, 'size': file_size, 'modified': os.path.getmtime(file_path)}
                         if file_hash in duplicates:
                             duplicates[file_hash].append(file_info)
                         else:
                             duplicates[file_hash] = [file_info]
                     except OSError:
                         continue
-        
+        finally:
+            pool.close()
+            pool.join()
+
+        if not self.running:
+            return
+
         result = {key: files for key, files in duplicates.items() if len(files) > 1}
         self.scan_complete.emit(result)
 
@@ -161,25 +205,11 @@ class FileScanner(QThread):
         except Exception as e:
             print(f"Error scanning directory: {str(e)}")
 
-    def _get_file_hash(self, file_path, chunk_size=8192):
-        """Calculate MD5 hash of a file."""
-        md5 = hashlib.md5()
-        try:
-            with open(file_path, 'rb') as f:
-                for chunk in iter(lambda: f.read(chunk_size), b''):
-                    if not self.running:
-                        return None
-                    md5.update(chunk)
-            return md5.hexdigest()
-        except Exception as e:
-            print(f"Error hashing {file_path}: {str(e)}")
-            return None
-
     def stop(self):
         self.running = False
 
 
-class DuplicateFinderApp(QMainWindow):
+class DuplicateFinderWidget(QWidget):
     def __init__(self):
         super().__init__()
         self.scanner_thread = None
@@ -187,45 +217,22 @@ class DuplicateFinderApp(QMainWindow):
         self.initUI()
         
     def initUI(self):
-        # Set window properties
-        self.setWindowTitle('Duplicate File Finder')
-        self.setGeometry(100, 100, 900, 600)
-        
-        # Create menu bar
-        menubar = self.menuBar()
-        tools_menu = menubar.addMenu('Tools')
-        
-        # Add disk analyzer action
-        disk_analyzer_action = QAction('Disk Space Analyzer', self)
-        disk_analyzer_action.triggered.connect(self.launch_disk_analyzer)
-        tools_menu.addAction(disk_analyzer_action)
-        
-        # Add disk visualizer action
-        visualizer_action = QAction('Disk Usage Visualizer', self)
-        visualizer_action.triggered.connect(self.launch_disk_visualizer)
-        tools_menu.addAction(visualizer_action)
-        
-        # Create central widget and main layout
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)
+        main_layout = QVBoxLayout(self)
         
         # Create scan options group
         scan_options_group = QGroupBox("Scan Options")
         scan_options_layout = QVBoxLayout(scan_options_group)
         
-        # Path selection - SIMPLIFIED to avoid freezing
+        # Path selection
         path_layout = QVBoxLayout()
         path_layout.addWidget(QLabel("Enter the full path to scan:"))
         
-        # Create a horizontal layout for path input and examples
         path_input_layout = QHBoxLayout()
         
         self.path_input = QLineEdit()
         self.path_input.setPlaceholderText("e.g., /home/user/Documents")
         path_input_layout.addWidget(self.path_input, 3)
         
-        # Add some quick access buttons for common directories
         home_button = QPushButton("Home")
         home_button.clicked.connect(lambda: self.path_input.setText(os.path.expanduser("~")))
         path_input_layout.addWidget(home_button, 1)
@@ -240,7 +247,6 @@ class DuplicateFinderApp(QMainWindow):
         
         path_layout.addLayout(path_input_layout)
         
-        # Add path validation
         path_validation_layout = QHBoxLayout()
         self.path_status_label = QLabel("")
         path_validation_layout.addWidget(self.path_status_label)
@@ -249,10 +255,7 @@ class DuplicateFinderApp(QMainWindow):
         check_path_button.clicked.connect(self.verify_path)
         path_validation_layout.addWidget(check_path_button)
         
-        # Dictionary to store references to buttons for easy access in tests
-        self.button_dict = {
-            'verify_path': check_path_button
-        }
+        self.button_dict = {'verify_path': check_path_button}
         
         path_layout.addLayout(path_validation_layout)
         scan_options_layout.addLayout(path_layout)
@@ -260,7 +263,6 @@ class DuplicateFinderApp(QMainWindow):
         # Advanced options
         advanced_layout = QHBoxLayout()
         
-        # File extension filter
         ext_layout = QHBoxLayout()
         ext_layout.addWidget(QLabel("File Extensions:"))
         self.extensions_input = QLineEdit()
@@ -268,7 +270,6 @@ class DuplicateFinderApp(QMainWindow):
         ext_layout.addWidget(self.extensions_input)
         advanced_layout.addLayout(ext_layout)
         
-        # Min file size
         size_layout = QHBoxLayout()
         size_layout.addWidget(QLabel("Min Size (KB):"))
         self.min_size_input = QSpinBox()
@@ -277,7 +278,6 @@ class DuplicateFinderApp(QMainWindow):
         size_layout.addWidget(self.min_size_input)
         advanced_layout.addLayout(size_layout)
         
-        # Scan method
         method_layout = QHBoxLayout()
         method_layout.addWidget(QLabel("Scan Method:"))
         self.scan_method_combo = QComboBox()
@@ -338,42 +338,8 @@ class DuplicateFinderApp(QMainWindow):
         self.export_button.setEnabled(False)
         action_layout.addWidget(self.export_button)
         
-        # Add disk analyzer button
-        disk_analyzer_button = QPushButton("Disk Space Analyzer")
-        disk_analyzer_button.clicked.connect(self.launch_disk_analyzer)
-        action_layout.addWidget(disk_analyzer_button)
-        
-        # Add disk visualizer button
-        visualizer_button = QPushButton("Disk Visualizer")
-        visualizer_button.clicked.connect(self.launch_disk_visualizer)
-        action_layout.addWidget(visualizer_button)
-        
         results_layout.addLayout(action_layout)
         main_layout.addWidget(results_group)
-        
-    def launch_disk_analyzer(self):
-        """Launch the Disk Space Analyzer application"""
-        try:
-            # Get the path to the disk_space_analyzer.py file
-            analyzer_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "disk_space_analyzer.py")
-            
-            # Launch the analyzer as a separate process
-            subprocess.Popen(["python3", analyzer_path])
-            
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Could not launch Disk Space Analyzer: {str(e)}")
-    
-    def launch_disk_visualizer(self):
-        """Launch the Disk Usage Visualizer"""
-        try:
-            # Get the path to the disk_visualizer.py file
-            visualizer_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "disk_visualizer.py")
-            
-            # Launch the visualizer as a separate process
-            subprocess.Popen(["python3", visualizer_path])
-            
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Could not launch Disk Visualizer: {str(e)}")
         
     def verify_path(self):
         """Verify that the entered path exists and is accessible"""
@@ -410,46 +376,26 @@ class DuplicateFinderApp(QMainWindow):
     
     def start_scan(self):
         """Start the scanning process"""
-        # Get scan path
         scan_path = self.path_input.text().strip()
         if not scan_path:
             QMessageBox.warning(self, "Invalid Path", "Please enter a directory path to scan.")
             return
             
-        # Verify path exists and is accessible
-        if not os.path.exists(scan_path):
-            QMessageBox.warning(self, "Invalid Path", "The specified directory does not exist.")
+        if not os.path.exists(scan_path) or not os.path.isdir(scan_path) or not os.access(scan_path, os.R_OK):
+            QMessageBox.warning(self, "Invalid Path", "Please enter a valid and accessible directory.")
             return
             
-        if not os.path.isdir(scan_path):
-            QMessageBox.warning(self, "Invalid Path", "The specified path is not a directory.")
-            return
-            
-        if not os.access(scan_path, os.R_OK):
-            QMessageBox.warning(self, "Invalid Path", "Cannot read the specified directory. Check permissions.")
-            return
-            
-        # Check if a scan is already running
         if self.scanner_thread and self.scanner_thread.isRunning():
-            QMessageBox.warning(self, "Scan in Progress", "A scan is already running. Please wait or stop it first.")
+            QMessageBox.warning(self, "Scan in Progress", "A scan is already running.")
             return
             
-        # Get scan options
         extensions_text = self.extensions_input.text().strip()
-        file_extensions = None
-        if extensions_text:
-            file_extensions = [ext.strip() for ext in extensions_text.split(',')]
-            
-        min_size = self.min_size_input.value() * 1024  # Convert KB to bytes
+        file_extensions = [ext.strip() for ext in extensions_text.split(',')] if extensions_text else None
+        min_size = self.min_size_input.value() * 1024
         
-        scan_method_text = self.scan_method_combo.currentText()
-        scan_method = "content"
-        if scan_method_text == "File Size":
-            scan_method = "size"
-        elif scan_method_text == "Filename":
-            scan_method = "name"
+        scan_method_map = {"File Size": "size", "Filename": "name"}
+        scan_method = scan_method_map.get(self.scan_method_combo.currentText(), "content")
             
-        # Update UI
         self.progress_bar.setValue(0)
         self.status_label.setText("Initializing scan...")
         self.scan_button.setEnabled(False)
@@ -458,7 +404,6 @@ class DuplicateFinderApp(QMainWindow):
         self.delete_button.setEnabled(False)
         self.export_button.setEnabled(False)
         
-        # Start scanner thread
         self.scanner_thread = FileScanner(scan_path, file_extensions, min_size, scan_method)
         self.scanner_thread.progress_update.connect(self.update_progress)
         self.scanner_thread.scan_complete.connect(self.display_results)
@@ -488,49 +433,34 @@ class DuplicateFinderApp(QMainWindow):
             self.stop_button.setEnabled(False)
             return
             
-        # Count total duplicates and space
         total_groups = len(duplicates)
         total_files = sum(len(files) - 1 for files in duplicates.values())
         total_wasted_space = sum((len(files) - 1) * files[0]['size'] for files in duplicates.values())
         
-        # Update status
         self.status_label.setText(
             f"Scan complete. Found {total_files} duplicate files in {total_groups} groups. "
             f"Potential space savings: {self.format_size(total_wasted_space)}"
         )
         
-        # Populate table
-        row = 0
-        for signature, files in duplicates.items():
-            # Skip if not actual duplicates
+        for row, (signature, files) in enumerate(duplicates.items()):
             if len(files) <= 1:
                 continue
                 
             self.results_table.insertRow(row)
             
-            # Group number
-            group_item = QTableWidgetItem(f"Group {row + 1}")
-            self.results_table.setItem(row, 0, group_item)
+            self.results_table.setItem(row, 0, QTableWidgetItem(f"Group {row + 1}"))
+            self.results_table.setItem(row, 1, QTableWidgetItem(self.format_size(files[0]['size'])))
             
-            # File size
-            size_item = QTableWidgetItem(self.format_size(files[0]['size']))
-            self.results_table.setItem(row, 1, size_item)
-            
-            # File list
             file_paths = [f['path'] for f in files]
             files_item = QTableWidgetItem(", ".join(os.path.basename(p) for p in file_paths))
             files_item.setToolTip("\n".join(file_paths))
             self.results_table.setItem(row, 2, files_item)
             
-            # Actions
             view_button = QPushButton("View")
             view_button.setProperty("group_id", row)
             view_button.clicked.connect(self.view_group_details)
             self.results_table.setCellWidget(row, 3, view_button)
             
-            row += 1
-            
-        # Enable action buttons
         self.scan_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.delete_button.setEnabled(True)
@@ -541,15 +471,12 @@ class DuplicateFinderApp(QMainWindow):
         sender = self.sender()
         group_id = sender.property("group_id")
         
-        # Get the duplicate group
         signature = list(self.duplicates.keys())[group_id]
         files = self.duplicates[signature]
         
-        # Create a dialog to display details
         dialog = QMessageBox(self)
         dialog.setWindowTitle("Duplicate Group Details")
         
-        # Create message with file details
         message = f"<b>Group {group_id + 1}</b><br>"
         message += f"<b>File size:</b> {self.format_size(files[0]['size'])}<br>"
         message += f"<b>Hash/Signature:</b> {signature}<br><br>"
@@ -581,20 +508,20 @@ class DuplicateFinderApp(QMainWindow):
                 signature = all_signatures[group_index]
                 signatures_to_process.append(signature)
                 files = self.duplicates[signature]
-                # Keep the first file, delete the rest
                 files_to_delete.extend([f['path'] for f in files[1:]])
                 total_size += sum(f['size'] for f in files[1:])
             except (IndexError, KeyError):
                 continue
 
         if not files_to_delete:
-            QMessageBox.information(self, "No Files to Delete", "The selected groups do not have any files that can be deleted (e.g., only one file in each group).")
+            QMessageBox.information(self, "No Files to Delete", "The selected groups do not have any files that can be deleted.")
             return
 
-        msg = (f"You have selected {len(selected_row_indices)} groups.\n" 
-               f"This will delete {len(files_to_delete)} files, freeing up {self.format_size(total_size)}.\n\n" 
-               "A default of keeping the first file and deleting the rest will be applied.\n" 
-               "This action cannot be undone. Are you sure you want to proceed?")
+        msg = (
+               f"You have selected {len(selected_row_indices)} groups.\n"
+               f"This will delete {len(files_to_delete)} files, freeing up {self.format_size(total_size)}.\n\n"
+               f"The first file in each group will be kept. This action cannot be undone.\n"
+               f"Are you sure you want to proceed?")
         
         confirm = QMessageBox.warning(self, "Confirm Batch Deletion", msg,
                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
@@ -612,7 +539,6 @@ class DuplicateFinderApp(QMainWindow):
                     failed_paths.append(file_path)
                     error_messages.append(f"{file_path}: {str(e)}")
 
-            # Update the data model
             successfully_deleted_paths = set(files_to_delete) - set(failed_paths)
 
             for signature in signatures_to_process:
@@ -624,16 +550,14 @@ class DuplicateFinderApp(QMainWindow):
                     else:
                         self.duplicates[signature] = updated_files
 
-            # Refresh the results table
             self.display_results(self.duplicates)
 
-            # Show results
             if not error_messages:
-                QMessageBox.information(self, "Deletion Complete",
-                                     f"Successfully deleted {deleted_count} file(s).")
+                QMessageBox.information(self, "Deletion Complete", f"Successfully deleted {deleted_count} file(s).")
             else:
-                error_msg = (f"Deleted {deleted_count} file(s), but failed to delete {len(error_messages)} file(s):\n\n" 
-                             + "\n".join(error_messages))
+                error_msg = (
+                           f"Deleted {deleted_count} file(s), but failed to delete {len(error_messages)} file(s):\n\n"
+                           + "\n".join(error_messages))
                 QMessageBox.warning(self, "Deletion Incomplete", error_msg)
         
     def export_results(self):
@@ -665,22 +589,51 @@ class DuplicateFinderApp(QMainWindow):
                 return f"{size_bytes:.2f} {unit}"
             size_bytes /= 1024
 
+class MainApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle('Duplicate File Finder')
+        self.setGeometry(100, 100, 1000, 800)
+        self.initUI()
+
+    def initUI(self):
+        self.tabs = QTabWidget()
+        self.setCentralWidget(self.tabs)
+
+        # Create tab widgets
+        self.duplicate_finder_tab = DuplicateFinderWidget()
+        self.disk_analyzer_tab = DiskSpaceAnalyzer()
+        self.disk_visualizer_tab = DiskVisualizer()
+
+        # Add tabs
+        self.tabs.addTab(self.duplicate_finder_tab, "Duplicate Finder")
+        self.tabs.addTab(self.disk_analyzer_tab, "Disk Space Analyzer")
+        self.tabs.addTab(self.disk_visualizer_tab, "Disk Usage Visualizer")
+        
+        # Create menu bar
+        menubar = self.menuBar()
+        tools_menu = menubar.addMenu('Tools')
+        
+        # Add actions to switch tabs
+        switch_to_analyzer_action = QAction('Disk Space Analyzer', self)
+        switch_to_analyzer_action.triggered.connect(lambda: self.tabs.setCurrentWidget(self.disk_analyzer_tab))
+        tools_menu.addAction(switch_to_analyzer_action)
+        
+        switch_to_visualizer_action = QAction('Disk Usage Visualizer', self)
+        switch_to_visualizer_action.triggered.connect(lambda: self.tabs.setCurrentWidget(self.disk_visualizer_tab))
+        tools_menu.addAction(switch_to_visualizer_action)
 
 def main():
     # Set Qt platform-specific workarounds
     if 'linux' in sys.platform:
-        # Fix for Wayland issues
         os.environ["QT_QPA_PLATFORM"] = "xcb"
-        
-        # Fix for file dialog issues on Linux
         os.environ["QT_FILESYSTEMMODEL_WATCH_FILES"] = "0"
         
     app = QApplication(sys.argv)
-    window = DuplicateFinderApp()
+    window = MainApp()
     window.show()
     sys.exit(app.exec_())
 
-from duplicate_finder.main import main
 
 if __name__ == '__main__':
     main()
