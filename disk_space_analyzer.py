@@ -511,26 +511,53 @@ class DiskSpaceAnalyzer(QWidget):
 
     
     def color_code_rows(self):
-        """Color code the rows based on file size"""
+        """Color code rows with a gradient based on file size, independent of sorting."""
+        sizes = []
         for i in range(self.results_table.rowCount()):
-            try:
-                # Get the size as text
-                size_text = self.results_table.item(i, 2).text()
-                
-                # Determine color based on position in list
-                if i < 3:  # Top 3 files
-                    color = QColor(255, 200, 200)  # Light red
-                elif i < 10:  # Top 10
-                    color = QColor(255, 230, 200)  # Light orange
-                else:
-                    color = QColor(255, 255, 220)  # Light yellow
-                    
-                # Set background color for all cells in this row
-                for j in range(self.results_table.columnCount()):
-                    self.results_table.item(i, j).setBackground(color)
-                    
-            except Exception:
+            size_item = self.results_table.item(i, 2)
+            if size_item:
+                size = size_item.data(Qt.UserRole)
+                if size is not None:
+                    sizes.append(size)
+        
+        if not sizes:
+            return
+
+        min_size = min(sizes)
+        max_size = max(sizes)
+        size_range = max_size - min_size
+
+        # Define the gradient colors
+        start_color = QColor(255, 255, 224)  # Light Yellow
+        end_color = QColor(255, 182, 193)    # Light Red
+
+        for i in range(self.results_table.rowCount()):
+            size_item = self.results_table.item(i, 2)
+            if not size_item:
                 continue
+            
+            size = size_item.data(Qt.UserRole)
+            if size is None:
+                continue
+
+            # Calculate the ratio to determine color
+            if size_range == 0:
+                ratio = 1.0
+            else:
+                ratio = (size - min_size) / size_range
+
+            # Linear interpolation between start and end colors
+            r = int(start_color.red() + ratio * (end_color.red() - start_color.red()))
+            g = int(start_color.green() + ratio * (end_color.green() - start_color.green()))
+            b = int(start_color.blue() + ratio * (end_color.blue() - start_color.blue()))
+            
+            color = QColor(r, g, b)
+
+            for j in range(self.results_table.columnCount()):
+                # Ensure item exists before setting background
+                if self.results_table.item(i, j):
+                    self.results_table.item(i, j).setBackground(color)
+                    self.results_table.item(i, j).setForeground(QColor('black'))
     
     def format_size(self, size_bytes):
         """Format byte size to human-readable string"""
